@@ -1,0 +1,200 @@
+#include <iostream>
+#include <fstream>
+#include <unordered_map>
+#include <queue>
+#include <vector>
+#include <bitset>
+#include <string>
+#include <sys/stat.h>
+#include <iomanip>
+#include <cstdint>
+
+using namespace std;
+
+struct NodoArbol {
+    unsigned char byte;
+    int frecuencia;
+    NodoArbol* izquierdo;
+    NodoArbol* derecho;
+
+    NodoArbol(unsigned char b, int f) : byte(b), frecuencia(f), izquierdo(nullptr), derecho(nullptr) {}
+};
+
+struct ComparadorNodo {
+    bool operator()(NodoArbol* a, NodoArbol* b) {
+        return a->frecuencia > b->frecuencia;
+    }
+};
+
+unordered_map<unsigned char, int> obtenerFrecuenciasBytes(const string& archivo) {
+    ifstream archivoEntrada(archivo, ios::binary);
+    unordered_map<unsigned char, int> mapaFrecuencias;
+
+    if (!archivoEntrada.is_open()) {
+        cerr << "No se pudo abrir el archivo: " << archivo << endl;
+        return mapaFrecuencias;
+    }
+
+    unsigned char byte;
+    while (archivoEntrada.read(reinterpret_cast<char*>(&byte), sizeof(byte))) {
+        mapaFrecuencias[byte]++;
+    }
+
+    archivoEntrada.close();
+    return mapaFrecuencias;
+}
+
+NodoArbol* construirArbolHuffman(const unordered_map<unsigned char, int>& frecuencias) {
+    priority_queue<NodoArbol*, vector<NodoArbol*>, ComparadorNodo> colaPrioridad;
+
+    for (const auto& par : frecuencias) {
+        colaPrioridad.push(new NodoArbol(par.first, par.second));
+    }
+
+    while (colaPrioridad.size() > 1) {
+        NodoArbol* izquierdo = colaPrioridad.top(); colaPrioridad.pop();
+        NodoArbol* derecho = colaPrioridad.top(); colaPrioridad.pop();
+        NodoArbol* nuevoNodo = new NodoArbol('\0', izquierdo->frecuencia + derecho->frecuencia);
+        nuevoNodo->izquierdo = izquierdo;
+        nuevoNodo->derecho = derecho;
+        colaPrioridad.push(nuevoNodo);
+    }
+
+    return colaPrioridad.top();
+}
+
+void generarCodigosHuffman(NodoArbol* nodo, const string& codigoActual, unordered_map<unsigned char, string>& mapaCodigos) {
+    if (!nodo) return;
+
+    if (nodo->byte != '\0') {
+        mapaCodigos[nodo->byte] = codigoActual;
+    }
+
+    generarCodigosHuffman(nodo->izquierdo, codigoActual + "0", mapaCodigos);
+    generarCodigosHuffman(nodo->derecho, codigoActual + "1", mapaCodigos);
+}
+
+string codificarArchivo(const string& archivo, const unordered_map<unsigned char, string>& mapaCodigos) {
+    ifstream archivoEntrada(archivo, ios::binary);
+    string codigoBinario;
+
+    if (!archivoEntrada.is_open()) {
+        cerr << "No se pudo abrir el archivo: " << archivo << endl;
+        return "";
+    }
+
+    unsigned char byte;
+    while (archivoEntrada.read(reinterpret_cast<char*>(&byte), sizeof(byte))) {
+        auto it = mapaCodigos.find(byte);
+        if (it != mapaCodigos.end()) {
+            codigoBinario += it->second;
+        } else {
+            cerr << "Advertencia: Byte no encontrado en el mapa de códigos: " << (int)byte << endl;
+        }
+    }
+
+    archivoEntrada.close();
+    return codigoBinario;
+}
+
+void guardarArchivoComprimido(const string& archivoSalida, const string& codigoBinario) {
+    ofstream archivoSalida(archivoSalida, ios::binary);
+
+    uint32_t longitudCodigo = codigoBinario.size();
+    archivoSalida.write(reinterpret_cast<const char*>(&longitudCodigo), sizeof(longitudCodigo));
+
+    size_t bitsEscritos = 0;
+    unsigned char buffer = 0;
+
+    for (char bit : codigoBinario) {
+        buffer = (buffer << 1) | (bit - '0');
+        bitsEscritos++;
+
+        if (bitsEscritos == 8) {
+            archivoSalida.put(buffer);
+            bitsEscritos = 0;
+            buffer = 0;
+        }
+    }
+
+    if (bitsEscritos > 0) {
+        buffer <<= (8 - bitsEscritos);
+        archivoSalida.put(buffer);
+    }
+
+    archivoSalida.close();
+}
+
+void decodificarArchivo(NodoArbol* raizArbol, const string& archivoComprimido, const string& archivoSalida) {
+    ifstream archivoEntrada(archivoComprimido, ios::binary);
+    ofstream archivoSalida(archivoSalida, ios::binary);
+
+    if (!archivoEntrada.is_open()) {
+        cerr << "No se pudo abrir el archivo comprimido: " << archivoComprimido << endl;
+        return;
+    }
+
+    uint32_t longitudCodigo;
+    archivoEntrada.read(reinterpret_cast<char*>(&longitudCodigo), sizeof(longitudCodigo));
+
+    string codigoBinario;
+    unsigned char byte;
+
+    while (archivoEntrada.read(reinterpret_cast<char*>(&byte), 1)) {
+        codigoBinario += bitset<8>(byte).to_string();
+    }
+
+    codigoBinario = codigoBinario.substr(0, longitudCodigo);
+
+    NodoArbol* nodoActual = raizArbol;
+    for (char bit : codigoBinario) {
+        nodoActual = (bit == '0') ? nodoActual->izquierdo : nodoActual->derecho;
+
+        if (!nodoActual->izquierdo && !nodoActual->derecho) {
+            archivoSalida.put(nodoActual->byte);
+            nodoActual = raizArbol;
+        }
+    }
+
+    archivoEntrada.close();
+    archivoSalida.close();
+}
+
+size_t obtenerTamanoArchivo(const string& archivo) {
+    struct stat infoArchivo;
+    if (stat(archivo.c_str(), &infoArchivo) == 0) {
+        return infoArchivo.st_size;
+    }
+    return 0;
+}
+
+int main() {
+    string archivoOriginal = "12708096_1080_1920_60fps.mp4"; // Modificar para el nombre de archivo: mp3, txt y mp4
+    string archivoComprimido = "video_comprimido.huff";
+    string archivoRecuperado = "video_recuperado.mp4";
+
+    unordered_map<unsigned char, int> frecuenciasBytes = obtenerFrecuenciasBytes(archivoOriginal);
+    if (frecuenciasBytes.empty()) return 1;
+
+    NodoArbol* arbolHuffman = construirArbolHuffman(frecuenciasBytes);
+
+    unordered_map<unsigned char, string> codigosHuffman;
+    generarCodigosHuffman(arbolHuffman, "", codigosHuffman);
+
+    string codigoBinario = codificarArchivo(archivoOriginal, codigosHuffman);
+
+    guardarArchivoComprimido(archivoComprimido, codigoBinario);
+
+    decodificarArchivo(arbolHuffman, archivoComprimido, archivoRecuperado);
+
+    size_t tamanoOriginal = obtenerTamanoArchivo(archivoOriginal);
+    size_t tamanoComprimido = obtenerTamanoArchivo(archivoComprimido);
+
+    cout << "Tamaño original: " << tamanoOriginal << " bytes" << endl;
+    cout << "Tamaño comprimido: " << tamanoComprimido << " bytes" << endl;
+    cout << "Factor de compresión: "
+         << fixed << setprecision(2)
+         << (double)tamanoOriginal / tamanoComprimido << endl;
+
+    return 0;
+}
